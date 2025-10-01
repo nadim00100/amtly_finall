@@ -1,0 +1,267 @@
+from services.openai_service import openai_service
+from services.vector_store import vector_store
+from services.language_detection import language_service
+
+
+class RAGChatHandler:
+    """RAG Chat Handler - IMPROVED WITH BETTER FOLLOW-UP HANDLING"""
+
+    def __init__(self):
+        self.vector_store = vector_store
+        self.openai_service = openai_service
+        self.language_service = language_service
+
+    def search_knowledge_base(self, query, k=3):
+        """Search knowledge base for relevant information"""
+        try:
+            results = self.vector_store.search_with_scores(query, k=k)
+
+            if not results:
+                return None
+
+            context_parts = []
+            sources = set()
+
+            for doc, score in results:
+                context_parts.append(doc.page_content)
+                if 'source' in doc.metadata:
+                    source_name = doc.metadata['source']
+                    if source_name and isinstance(source_name, str):
+                        clean_source = source_name.replace('.pdf', '').replace('.txt', '').strip()
+                        if clean_source and clean_source not in ['*', 'unknown', ''] and len(clean_source) > 1:
+                            sources.add(clean_source)
+
+            return {
+                'context': '\n\n'.join(context_parts),
+                'sources': list(sources),
+                'chunks_found': len(results)
+            }
+        except Exception as e:
+            print(f"Knowledge base search error: {e}")
+            return None
+
+    def generate_rag_response(self, user_message, document_context=None, requested_language=None,
+                              conversation_history=None):
+        """Generate response using RAG with conversation history - IMPROVED FOLLOW-UPS"""
+
+        # Detect language
+        if requested_language:
+            response_language = requested_language
+            confidence = 'high'
+        else:
+            response_language = self.language_service.get_response_language(user_message)
+            _, confidence, _ = self.language_service.detect_language(user_message)
+
+        # Check for German institution email
+        is_german_institution_email = self.language_service.is_german_institution_request(user_message)
+        if is_german_institution_email:
+            response_language = 'de'
+            confidence = 'high'
+
+        # Search knowledge base
+        knowledge_result = self.search_knowledge_base(user_message)
+
+        # Build context
+        context_parts = []
+        sources = []
+
+        # Add recent conversation for follow-ups (IMPROVED)
+        if conversation_history and len(conversation_history) > 1:
+            context_parts.append("=== RECENT CONVERSATION (IMPORTANT FOR FOLLOW-UPS) ===")
+            # Take last 6 messages for better context
+            recent = conversation_history[-6:]
+            conv_text = []
+            for idx, msg in enumerate(recent):
+                role = "User" if msg['role'] == 'user' else "Assistant"
+                # Keep full content for last 2 messages, truncate older ones
+                if idx >= len(recent) - 2:
+                    content = msg['content']
+                else:
+                    content = msg['content'][:200] + "..." if len(msg['content']) > 200 else msg['content']
+                conv_text.append(f"{role}: {content}")
+            context_parts.append('\n'.join(conv_text))
+            context_parts.append("\n⚠️ CRITICAL: Use this conversation history to understand follow-up questions!")
+
+        # Add knowledge base context
+        if knowledge_result:
+            context_parts.append("=== OFFICIAL DOCUMENTS ===")
+            context_parts.append(knowledge_result['context'])
+            sources.extend(knowledge_result.get('sources', []))
+
+        # Add document context
+        if document_context:
+            context_parts.append("=== UPLOADED DOCUMENT ===")
+            context_parts.append(document_context)
+
+        # Create system prompt
+        system_prompt = self._create_system_prompt(
+            response_language,
+            is_german_institution_email,
+            context_parts,
+            confidence,
+            has_conversation_history=bool(conversation_history and len(conversation_history) > 1)
+        )
+
+        # Get response
+        try:
+            result = self.openai_service.get_response(
+                user_message,
+                system_prompt,
+                clean_context=True
+            )
+
+            if result['success']:
+                return {
+                    'success': True,
+                    'response': result['response'],
+                    'sources': sources,
+                    'used_knowledge_base': bool(knowledge_result),
+                    'detected_language': response_language,
+                    'is_german_institution_email': is_german_institution_email
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': result['error'],
+                    'response': self._get_error_message(response_language)
+                }
+
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'response': self._get_error_message(response_language)
+            }
+
+    def _create_system_prompt(self, language, is_german_institution_email, context_parts, confidence,
+                              has_conversation_history=False):
+        """Create system prompt based on language and context"""
+
+        full_context = '\n\n'.join(context_parts) if context_parts else ""
+        lang_instruction = self.language_service.get_system_prompt_instruction(language, confidence)
+
+        # Conversation awareness (IMPROVED)
+        conversation_instruction = ""
+        if has_conversation_history:
+            if language == 'de':
+                conversation_instruction = """
+⚠️ WICHTIG FÜR FOLGEFRAGEN:
+- Du siehst die bisherige Unterhaltung im Kontext oben
+- Bei unvollständigen Fragen wie "Wie viel?", "Wann?", "Und das?" beziehe dich auf das zuvor diskutierte Thema
+- Bei E-Mail-Nachfragen wie "Mach es formeller", "Kürzer bitte" beziehe dich auf die vorherige E-Mail
+- Bei "Erkläre das nochmal", "Was bedeutet das?", "Mehr Details" beziehe dich auf die letzte Antwort
+- Bei "it", "das", "dies", "diese" beziehe dich auf den Kontext der vorherigen Nachricht
+- Halte den Gesprächsfluss aufrecht - antworte so, als ob du die gesamte Konversation verstehst
+- Wenn die Frage nur aus 1-3 Wörtern besteht, ist es fast sicher eine Folgefrage!
+"""
+            else:
+                conversation_instruction = """
+⚠️ IMPORTANT FOR FOLLOW-UPS:
+- You can see the conversation history in the context above
+- For incomplete questions like "How much?", "When?", "And that?" refer to previously discussed topic
+- For email follow-ups like "Make it formal", "Shorter please" refer to the previous email
+- For "Explain again", "What does that mean?", "More details" refer to the last answer
+- For pronouns "it", "that", "this", "these" refer to context from previous messages
+- Maintain conversation flow - answer as if you understand the entire conversation
+- If the question is only 1-3 words, it's almost certainly a follow-up!
+"""
+
+        # IMPROVED: Special handling for German institution emails
+        if language == 'de':
+            if is_german_institution_email:
+                base_prompt = """Du bist Amtly, ein KI-Assistent für deutsche Bürokratie.
+Du hilfst beim Verfassen von E-Mails an deutsche Behörden.
+
+CRITICAL: GERMAN OFFICIAL EMAIL STRUCTURE - ALWAYS FOLLOW THIS FORMAT:
+
+📋 **PFLICHTANGABEN (MANDATORY INFORMATION):**
+Every German official email MUST include reference numbers at the top. ALWAYS include these:
+
+Betreff: [Clear subject line]
+
+Von: [Full name]
+Kundennummer: [Request this from user if not provided - say "Bitte geben Sie Ihre Kundennummer an"]
+Aktenzeichen: [Or Bedarfsgemeinschaftsnummer for Jobcenter - request if not provided]
+
+DANN der Brief-Inhalt:
+
+Sehr geehrte Damen und Herren,
+
+[Main content - formal German style]
+
+[Closing paragraph]
+
+Mit freundlichen Grüßen,
+[Name]
+
+WICHTIG:
+1. ✅ IMMER Kundennummer/Aktenzeichen erwähnen (oben nach "Von:")
+2. ✅ Wenn Benutzer keine Nummer gibt, frage danach: "Bitte geben Sie Ihre Kundennummer an"
+3. ✅ Verwende formellen deutschen Behördenstil
+4. ✅ Struktur: Betreff → Referenznummern → Anrede → Sachverhalt → Schluss
+5. ✅ Immer "Sie" verwenden (niemals "du")
+6. ✅ Sachlich, höflich, präzise
+
+BEISPIEL-STRUKTUR:
+
+Betreff: Antrag auf Weiterbewilligung des Bürgergeldes
+
+Von: Max Mustermann
+Kundennummer: 12345678
+Bedarfsgemeinschaftsnummer: BG-2024-001
+
+Sehr geehrte Damen und Herren,
+
+hiermit beantrage ich die Weiterbewilligung meines Bürgergeldes für den Zeitraum ab dem 01.02.2024.
+
+Die erforderlichen Unterlagen füge ich diesem Schreiben bei.
+
+Für Rückfragen stehe ich Ihnen gerne zur Verfügung.
+
+Mit freundlichen Grüßen,
+Max Mustermann
+"""
+            else:
+                base_prompt = """Du bist Amtly, ein KI-Assistent für deutsche Bürokratie.
+Du hilfst bei Jobcenter-Prozessen, Sozialleistungen und Formularen.
+Antworte auf Deutsch und sei hilfreich, klar und professionell."""
+        else:
+            base_prompt = """You are Amtly, an AI assistant for German bureaucracy.
+You help with Jobcenter processes, social services, and official forms.
+Respond in English and be helpful, clear, and professional."""
+
+        # Add context
+        if full_context:
+            if language == 'de':
+                context_instruction = f"""
+Nutze diese Informationen:
+{full_context}
+
+WICHTIG: 
+- Basiere deine Antwort auf den Informationen
+- Wenn Informationen fehlen, sage das klar
+- Sei spezifisch und zitiere relevante Details"""
+            else:
+                context_instruction = f"""
+Use this information:
+{full_context}
+
+IMPORTANT: 
+- Base your answer on provided information
+- If information is missing, say so clearly
+- Be specific and cite relevant details"""
+
+            return f"{lang_instruction}\n\n{base_prompt}\n{conversation_instruction}\n{context_instruction}"
+        else:
+            return f"{lang_instruction}\n\n{base_prompt}\n{conversation_instruction}"
+
+    def _get_error_message(self, language):
+        """Get error message in appropriate language"""
+        if language == 'de':
+            return "Es ist ein Fehler aufgetreten. Bitte versuche es erneut."
+        else:
+            return "An error occurred. Please try again."
+
+
+# Create global instance
+rag_chat_handler = RAGChatHandler()
