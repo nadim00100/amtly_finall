@@ -1,6 +1,6 @@
 """
 Enhanced Form Helper with structured knowledge base
-IMPROVED WITH BETTER FOLLOW-UP HANDLING
+FIXED VERSION - Better general question detection
 """
 
 import re
@@ -13,7 +13,7 @@ from services.vector_store import vector_store
 
 
 class EnhancedFormHelper:
-    """Form helper with structured knowledge and intelligent routing - IMPROVED FOLLOW-UPS"""
+    """Form helper with structured knowledge and intelligent routing - FIXED"""
 
     def __init__(self):
         self.form_schemas = FORM_SCHEMAS
@@ -43,6 +43,7 @@ class EnhancedFormHelper:
     def detect_form_and_field(self, user_message: str) -> Dict:
         """
         Detect which form and optionally which field/section user is asking about
+        ✅ FIXED: Better detection to avoid false positives on general questions
 
         Returns:
             {
@@ -53,6 +54,23 @@ class EnhancedFormHelper:
             }
         """
         message_lower = user_message.lower()
+
+        # ✅ STEP 0: Check for general questions FIRST (should NOT be form questions)
+        general_question_patterns = [
+            'what happen','what happens', 'was passiert', 'what if', 'was ist wenn',
+            'how much', 'wie viel', 'wieviel',
+            'am i eligible', 'bin ich berechtigt', 'habe ich anspruch',
+            'do i qualify', 'kann ich bekommen',
+            'when do i get', 'wann bekomme ich',
+            'what is', 'was ist', 'define', 'explain',
+            'tell me about', 'erzähle mir',
+            'can i', 'darf ich', 'do i have to', 'muss ich',
+            'should i', 'soll ich', 'will they', 'werden sie',
+            'do they', 'does jobcenter', 'macht jobcenter',
+        ]
+
+        # If message contains general question patterns, be VERY restrictive
+        has_general_pattern = any(pattern in message_lower for pattern in general_question_patterns)
 
         # Step 1: Detect form
         form_code = None
@@ -103,7 +121,8 @@ class EnhancedFormHelper:
                 break
 
         # Step 4: Infer form from context keywords if not explicitly mentioned
-        if not form_code:
+        # ✅ FIXED: Only infer if NOT a general question
+        if not form_code and not has_general_pattern:
             if any(word in message_lower for word in ['bank', 'iban', 'konto', 'account']):
                 form_code = 'HA'
                 confidence = 'medium'
@@ -119,6 +138,21 @@ class EnhancedFormHelper:
             elif any(word in message_lower for word in ['renewal', 'weiterbewilligung', 'verlängerung', 'extend']):
                 form_code = 'WBA'
                 confidence = 'medium'
+
+        # ✅ FIXED: If general question pattern detected, be VERY aggressive
+        if has_general_pattern:
+            # Only allow if EXPLICITLY mentioning a form code (high confidence)
+            if confidence != 'high':
+                # Clear everything - this is a general question, not form help
+                form_code = None
+                field = None
+                section = None
+                confidence = 'low'
+            else:
+                # Even with explicit form mention, still need field/section for form help
+                # Otherwise it's just asking ABOUT the form, not HOW TO FILL it
+                if not (field or section):
+                    confidence = 'low'  # Downgrade to prevent routing to form helper
 
         return {
             'form_code': form_code,
@@ -201,7 +235,7 @@ class EnhancedFormHelper:
 
     def generate_field_response(self, form_code: str, field: str,
                                 user_question: str, conversation_history: List = None) -> Dict:
-        """Generate response for field-specific question - IMPROVED FOLLOW-UPS"""
+        """Generate response for field-specific question"""
 
         field_data = self.get_field_guidance(form_code, field)
 
@@ -258,14 +292,13 @@ class EnhancedFormHelper:
 
         structured_context = '\n'.join(context_parts)
 
-        # Build conversation context (IMPROVED)
+        # Build conversation context
         conv_context = ""
         if conversation_history and len(conversation_history) > 1:
-            recent = conversation_history[-6:]  # Increased from 4 to 6
+            recent = conversation_history[-6:]
             conv_lines = []
             for idx, msg in enumerate(recent):
                 role = "User" if msg['role'] == 'user' else "Assistant"
-                # Keep full content for last 2 messages
                 if idx >= len(recent) - 2:
                     content = msg['content']
                 else:
@@ -278,7 +311,7 @@ class EnhancedFormHelper:
         # Detect user language
         user_language = self._detect_language(user_question)
 
-        # Create system prompt (IMPROVED)
+        # Create system prompt
         if user_language == 'de':
             system_prompt = f"""Du bist Amtly, ein KI-Assistent für deutsche Formulare.{conv_context}
 
@@ -349,7 +382,7 @@ Answer the user's question about this form field.
 
     def generate_section_response(self, form_code: str, section: str,
                                   user_question: str, conversation_history: List = None) -> Dict:
-        """Generate response for section-level question - IMPROVED FOLLOW-UPS"""
+        """Generate response for section-level question"""
 
         section_data = self.get_section_guidance(form_code, section)
 
@@ -379,10 +412,10 @@ Answer the user's question about this form field.
 
         structured_context = '\n'.join(context_parts)
 
-        # Build conversation context (IMPROVED)
+        # Build conversation context
         conv_context = ""
         if conversation_history and len(conversation_history) > 1:
-            recent = conversation_history[-6:]  # Increased from 4 to 6
+            recent = conversation_history[-6:]
             conv_lines = []
             for idx, msg in enumerate(recent):
                 role = "User" if msg['role'] == 'user' else "Assistant"
@@ -398,7 +431,7 @@ Answer the user's question about this form field.
         # Detect language
         user_language = self._detect_language(user_question)
 
-        # Create system prompt (IMPROVED)
+        # Create system prompt
         if user_language == 'de':
             system_prompt = f"""Du bist Amtly, ein KI-Assistent für deutsche Formulare.{conv_context}
 
@@ -456,7 +489,7 @@ Explain this section of the form and help the user fill it out.
 
     def generate_form_overview_response(self, form_code: str,
                                         user_question: str, conversation_history: List = None) -> Dict:
-        """Generate response for form-level question - IMPROVED FOLLOW-UPS"""
+        """Generate response for form-level question"""
 
         form_data = self.get_form_overview(form_code)
 
@@ -495,7 +528,7 @@ Explain this section of the form and help the user fill it out.
 
         structured_context = '\n'.join(context_parts)
 
-        # Build conversation context (IMPROVED)
+        # Build conversation context
         conv_context = ""
         if conversation_history and len(conversation_history) > 1:
             recent = conversation_history[-6:]
@@ -513,7 +546,7 @@ Explain this section of the form and help the user fill it out.
         # Detect language
         user_language = self._detect_language(user_question)
 
-        # Create system prompt (IMPROVED)
+        # Create system prompt
         if user_language == 'de':
             system_prompt = f"""Du bist Amtly, ein KI-Assistent für deutsche Formulare.{conv_context}
 
@@ -573,7 +606,7 @@ Explain this form and help the user understand it.
             }
 
     def help_with_form(self, user_message: str, conversation_history: List = None) -> Dict:
-        """Main entry point for form help - IMPROVED FOLLOW-UPS"""
+        """Main entry point for form help"""
 
         # Detect what user is asking about
         detection = self.detect_form_and_field(user_message)
@@ -607,14 +640,14 @@ Explain this form and help the user understand it.
 
     def _handle_generic_form_question(self, user_message: str,
                                       conversation_history: List = None) -> Dict:
-        """Handle questions that don't specify a particular form - IMPROVED FOLLOW-UPS"""
+        """Handle questions that don't specify a particular form"""
 
         user_language = self._detect_language(user_message)
 
-        # Build context from conversation if available (IMPROVED)
+        # Build context from conversation if available
         conv_context = ""
         if conversation_history and len(conversation_history) > 1:
-            recent = conversation_history[-6:]  # Increased from 4 to 6
+            recent = conversation_history[-6:]
             conv_lines = []
             for idx, msg in enumerate(recent):
                 role = "User" if msg['role'] == 'user' else "Assistant"

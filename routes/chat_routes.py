@@ -1,10 +1,6 @@
 """
 Chat Routes - Main chat functionality
-COMPLETE VERSION with all fixes:
-- Enhanced form helper integration
-- Better follow-up handling (12 message history)
-- Fixed duplicate translations
-- Fixed wrong sources
+FIXED VERSION with enhanced form helper integration
 """
 
 from flask import Blueprint, request, jsonify, session
@@ -16,7 +12,6 @@ from services.openai_service import openai_service
 from services.language_detection import language_service
 from core.chat_handler import rag_chat_handler
 from core.document_processor import document_processor
-# ✅ FIXED: Use enhanced_form_helper instead of simple_form_helper
 from core.enhanced_form_helper import enhanced_form_helper
 from utils.validation import validation_utils
 from utils.response_formatter import response_formatter
@@ -52,7 +47,7 @@ def detect_user_intent(message):
 
 def is_simple_file_command(message):
     """
-    ✅ NEW: Detect if user message is just a simple command about the uploaded file
+    Detect if user message is just a simple command about the uploaded file
     These commands should be handled by file processor only, not RAG
     """
     if not message:
@@ -99,8 +94,7 @@ def is_simple_file_command(message):
 
 def route_user_message(user_message, conversation_history=None):
     """
-    ✅ FIXED: Smart routing using enhanced form helper
-    Now properly detects form questions with better accuracy
+    Smart routing using enhanced form helper
     """
 
     # 1. Use enhanced form detection with better algorithm
@@ -130,7 +124,7 @@ def route_user_message(user_message, conversation_history=None):
 
 
 def handle_direct_openai_fallback(user_message, language, conversation_history=None):
-    """Fallback when both form helper and RAG fail - IMPROVED FOLLOW-UPS"""
+    """Fallback when both form helper and RAG fail"""
     conv_context = ""
     if conversation_history and len(conversation_history) > 1:
         # Use more context for better follow-up handling
@@ -216,7 +210,7 @@ def chat():
 
         # Get context - INCREASED for better follow-ups
         document_context = chat_obj.document_context or ''
-        conversation_history = get_chat_messages(chat_id, limit=12)  # Increased from 8 to 12
+        conversation_history = get_chat_messages(chat_id, limit=12)
 
         # Validation
         if not user_message and not files:
@@ -269,7 +263,7 @@ def chat():
             user_language = 'de'
 
         # ====================================================================
-        # PROCESS MULTIPLE UPLOADED FILES - IMPROVED FOLLOW-UPS
+        # PROCESS MULTIPLE UPLOADED FILES
         # ====================================================================
         if files:
             response_text, sources = process_uploaded_files(
@@ -282,7 +276,7 @@ def chat():
                 message_type = 'document'
 
         # ====================================================================
-        # PROCESS TEXT MESSAGE - ✅ FIXED: Skip if simple file command
+        # PROCESS TEXT MESSAGE - Skip if simple file command
         # ====================================================================
         if user_message:
             # Check if this is just a simple file command
@@ -337,7 +331,7 @@ def chat():
 
 
 def process_uploaded_files(files, user_language, user_intent, conversation_history):
-    """Process multiple uploaded files and return combined analysis - IMPROVED FOLLOW-UPS"""
+    """Process multiple uploaded files and return combined analysis"""
     try:
         all_extracted_texts = []
         processed_files = []
@@ -387,7 +381,7 @@ def process_uploaded_files(files, user_language, user_intent, conversation_histo
                     combined_text += f"\n\n--- PAGE {item['page_number']} ({item['filename']}) ---\n\n"
                 combined_text += item['text']
 
-            # Build conversation context (IMPROVED)
+            # Build conversation context
             conv_context = ""
             if conversation_history and len(conversation_history) > 1:
                 # Take more context for file-related follow-ups
@@ -469,14 +463,14 @@ IMPORTANT for follow-ups:
 
 def process_text_message(user_message, document_context, user_language, conversation_history, existing_response):
     """
-    ✅ FIXED: Process text message with improved form routing
+    Process text message with improved form routing
     """
     route = route_user_message(user_message, conversation_history)
     sources = []
     message_type = 'chat'
 
     # ====================================================================
-    # ✅ FIXED: Try enhanced form helper
+    # Try enhanced form helper
     # ====================================================================
     if route == 'form':
         form_result = enhanced_form_helper.help_with_form(
