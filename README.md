@@ -268,4 +268,3 @@ du -sh data/*
 
 ---
 
-**For more information, see the main [README.md](../README.md)**
